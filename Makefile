@@ -1,7 +1,7 @@
-# Makefile — compila versões serial, naive, semáforos e busy-wait (com/sem barreiras)
+# Makefile — compila versões: serial, naive, semáforos (com/sem barreira) e busy-wait (com/sem barreira)
 # Uso:
-#   make                  # compila tudo no modo "fast"
-#   make MODE=safe        # compila tudo no modo "safe" (sem fast-math)
+#   make                 # compila tudo no modo "fast"
+#   make MODE=safe       # compila tudo no modo "safe" (sem fast-math)
 #   make clean
 
 CXX := g++
@@ -25,35 +25,40 @@ else
   CXXFLAGS := $(COMMON_FLAGS) $(SAFE_FLAGS)
 endif
 
-# OpenMP + pthread para versões paralelas
+# OpenMP para versões paralelas
 OMPFLAGS := -fopenmp -pthread
-LDLIBS := -lm
+LDLIBS   := -lm
 
-# Alvos
-SERIAL_APP      := hopscotch2d_serial
-NAIVE_APP       := hopscotch2d_omp_naive
-SEM_NOBAR_APP   := hopscotch2d_omp_sem_nobarrier
-BW_BAR_APP      := hopscotch2d_omp_busywait_barrier
-BW_NOBAR_APP    := hopscotch2d_omp_busywait_nobarrier
+# ----- Aplicativos -----
+SERIAL_APP    := hopscotch2d_serial
+NAIVE_APP     := hopscotch2d_omp_naive
+SEM_BAR_APP   := hopscotch2d_omp_sem_barrier
+SEM_NOBAR_APP := hopscotch2d_omp_sem_nobarrier
+BW_BAR_APP    := hopscotch2d_omp_busywait_barrier
+BW_NOBAR_APP  := hopscotch2d_omp_busywait_nobarrier
 
-# Fontes (ajuste os que você tiver no diretório)
+# ----- Fontes (ajuste os nomes conforme seus arquivos no diretório) -----
 SERIAL_SRC    := hopscotch2d_serial.cpp
 NAIVE_SRC     := hopscotch2d_omp_naive.cpp
+SEM_BAR_SRC   := hopscotch2d_omp_sem_barrier.cpp
 SEM_NOBAR_SRC := hopscotch2d_omp_sem_nobarrier.cpp
 BW_BAR_SRC    := hopscotch2d_omp_busywait_barrier.cpp
 BW_NOBAR_SRC  := hopscotch2d_omp_busywait_nobarrier.cpp
 
+APPS := $(SERIAL_APP) $(NAIVE_APP) $(SEM_BAR_APP) $(SEM_NOBAR_APP) $(BW_BAR_APP) $(BW_NOBAR_APP)
+
 .PHONY: all clean
 
-all: $(SERIAL_APP) $(NAIVE_APP) $(SEM_NOBAR_APP) $(BW_BAR_APP) $(BW_NOBAR_APP)
+all: $(APPS)
 
+# ----- Regras -----
 $(SERIAL_APP): $(SERIAL_SRC)
 	$(CXX) $(CXXFLAGS) $< -o $@ $(LDLIBS)
 
 $(NAIVE_APP): $(NAIVE_SRC)
 	$(CXX) $(CXXFLAGS) $(OMPFLAGS) $< -o $@ $(LDLIBS)
 
-$(SEM_BARRIER_APP): $(SEM_BARRIER_SRC)
+$(SEM_BAR_APP): $(SEM_BAR_SRC)
 	$(CXX) $(CXXFLAGS) $(OMPFLAGS) $< -o $@ $(LDLIBS)
 
 $(SEM_NOBAR_APP): $(SEM_NOBAR_SRC)
@@ -66,4 +71,4 @@ $(BW_NOBAR_APP): $(BW_NOBAR_SRC)
 	$(CXX) $(CXXFLAGS) $(OMPFLAGS) $< -o $@ $(LDLIBS)
 
 clean:
-	rm -f $(SERIAL_APP) $(NAIVE_APP) $(SEM_NOBAR_APP) $(BW_BAR_APP) $(BW_NOBAR_APP) *.o
+	rm -f $(APPS) *.o
