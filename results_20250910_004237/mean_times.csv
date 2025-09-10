@@ -1,0 +1,2 @@
+exe,threads,avg_time_sec
+./hopscotch2d_omp_naive,1,12.314240
