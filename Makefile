@@ -33,7 +33,7 @@ LDLIBS := -lm
 SERIAL_APP      := hopscotch2d_serial
 NAIVE_APP       := hopscotch2d_omp_naive
 SEM_NOBAR_APP   := hopscotch2d_omp_sem_nobarrier
-SEM_BARRIER     := hopscotch2d_omp_sem_nobarrier
+SEM_BARRIER_APP     := hopscotch2d_omp_sem_nobarrier
 BW_BAR_APP      := hopscotch2d_omp_busywait_barrier
 BW_NOBAR_APP    := hopscotch2d_omp_busywait_nobarrier
 
@@ -53,6 +53,9 @@ $(SERIAL_APP): $(SERIAL_SRC)
 	$(CXX) $(CXXFLAGS) $< -o $@ $(LDLIBS)
 
 $(NAIVE_APP): $(NAIVE_SRC)
+	$(CXX) $(CXXFLAGS) $(OMPFLAGS) $< -o $@ $(LDLIBS)
+
+$(SEM_BARRIER_APP): $(SEM_BARRIER_SRC)
 	$(CXX) $(CXXFLAGS) $(OMPFLAGS) $< -o $@ $(LDLIBS)
 
 $(SEM_NOBAR_APP): $(SEM_NOBAR_SRC)
