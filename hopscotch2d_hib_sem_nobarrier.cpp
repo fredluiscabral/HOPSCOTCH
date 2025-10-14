@@ -438,22 +438,21 @@ int main(int argc, char** argv)
         }
     }
 
-    // Linhas interiores deste rank
-    for (int ig = start_g; ig <= end_g; ig += 16) {
-        if (ig % 16 != 0) continue;
-        const int il = (ig - start_g) + 1;
+
+    // Linhas interiores deste rank (amostradas a cada 16 em i e j)
+    // Começa no primeiro múltiplo de 16 dentro do intervalo [start_g .. end_g]
+    int first_ig = ((start_g + 15) / 16) * 16;  // arredonda p/ cima p/ múltiplo de 16
+    for (int ig = first_ig; ig <= end_g; ig += 16) {
+        const int il = (ig - start_g) + 1;   // linha local correspondente (1..local_n)
         const double x = ig * h;
-        for (int j=0; j<N; j+=16) {
+        for (int j = 0; j < N; j += 16) {
             const double y = j * h;
-            double v = 0.0;
-            if (j==0 || j==N-1) {
-                v = 0.0;
-            } else {
-                v = U_new[(size_t)il * N + j];
-            }
+            double v = (j == 0 || j == N-1) ? 0.0 : U_new[(size_t)il * N + j];
             oss << x << " " << y << " " << v << "\n";
         }
     }
+
+
 
     // Se este é o último rank, adiciona i=N-1
     if (rank == nprocs-1) {
