@@ -42,7 +42,8 @@ APPS := \
   hopscotch2d_omp_busywait_barrier \
   hopscotch2d_omp_busywait_nobarrier \
   hopscotch2d_hib_naive \
-  hopscotch2d_hib_sem_nobarrier
+  hopscotch2d_hib_sem_nobarrier \
+  hopscotch2d_hib_busywait_barrier
 
 .PHONY: all clean
 all: $(APPS)
@@ -60,6 +61,9 @@ hopscotch2d_hib_naive: hopscotch2d_hib_naive.cpp
 	$(MPICXX) $(CXXFLAGS) $(OMPFLAGS) $(MPI_DEFS) $< -o $@ $(LDLIBS)
 
 hopscotch2d_hib_sem_nobarrier: hopscotch2d_hib_sem_nobarrier.cpp
+	$(MPICXX) $(CXXFLAGS) $(OMPFLAGS) $(MPI_DEFS) $< -o $@ $(LDLIBS)
+
+hopscotch2d_hib_busywait_barrier: hopscotch2d_hib_busywait_barrier.cpp
 	$(MPICXX) $(CXXFLAGS) $(OMPFLAGS) $(MPI_DEFS) $< -o $@ $(LDLIBS)
 
 clean:
