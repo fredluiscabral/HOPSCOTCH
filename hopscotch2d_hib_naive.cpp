@@ -345,7 +345,7 @@ int main(int argc, char** argv) {
     double elapsed_max = 0.0;
     MPI_Reduce(&elapsed, &elapsed_max, 1, MPI_DOUBLE, MPI_MAX, 0, cart);
     if (world_rank==0){
-        std::cout << "Tempo (max entre ranks): " << elapsed_max << " s\n";
+        std::cout << "Tempo: " << elapsed_max << " s\n";
     }
 
     // ===================== SAÍDA ÚNICA (output.txt) =====================
