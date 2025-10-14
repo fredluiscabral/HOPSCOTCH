@@ -28,7 +28,7 @@ endif
 
 # OpenMP e MPI
 OMPFLAGS   := -fopenmp -pthread
-# Evita incluir os C++ bindings obsoletos do MPI (elimina aqueles warnings chatos)
+# Evita incluir os C++ bindings obsoletos do MPI (elimina warnings)
 MPI_DEFS   := -DOMPI_SKIP_MPICXX=1 -DMPICH_SKIP_MPICXX=1
 
 LDLIBS := -lm
@@ -41,21 +41,25 @@ APPS := \
   hopscotch2d_omp_sem_nobarrier \
   hopscotch2d_omp_busywait_barrier \
   hopscotch2d_omp_busywait_nobarrier \
-  hopscotch2d_hib_naive
+  hopscotch2d_hib_naive \
+  hopscotch2d_hib_sem_nobarrier
 
 .PHONY: all clean
 all: $(APPS)
 
 # Flags por alvo:
-hopscotch2d_serial:      TFLAGS := $(CXXFLAGS)
-hopscotch2d_omp_%:       TFLAGS := $(CXXFLAGS) $(OMPFLAGS)
+hopscotch2d_serial: TFLAGS := $(CXXFLAGS)
+hopscotch2d_omp_%:  TFLAGS := $(CXXFLAGS) $(OMPFLAGS)
 
 # Regra genérica (serial e OpenMP)
 %: %.cpp
 	$(CXX) $(TFLAGS) $< -o $@ $(LDLIBS)
 
-# Regra específica para a versão híbrida (MPI+OpenMP)
+# Regras específicas para as versões híbridas (MPI+OpenMP)
 hopscotch2d_hib_naive: hopscotch2d_hib_naive.cpp
+	$(MPICXX) $(CXXFLAGS) $(OMPFLAGS) $(MPI_DEFS) $< -o $@ $(LDLIBS)
+
+hopscotch2d_hib_sem_nobarrier: hopscotch2d_hib_sem_nobarrier.cpp
 	$(MPICXX) $(CXXFLAGS) $(OMPFLAGS) $(MPI_DEFS) $< -o $@ $(LDLIBS)
 
 clean:
