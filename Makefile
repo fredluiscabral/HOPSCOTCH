@@ -33,7 +33,9 @@ MPI_DEFS   := -DOMPI_SKIP_MPICXX=1 -DMPICH_SKIP_MPICXX=1
 
 LDLIBS := -lm
 
+# =========================
 # Alvos
+# =========================
 APPS := \
   hopscotch2d_serial \
   hopscotch2d_omp_naive \
@@ -42,28 +44,42 @@ APPS := \
   hopscotch2d_omp_busywait_barrier \
   hopscotch2d_omp_busywait_nobarrier \
   hopscotch2d_hib_naive \
+  hopscotch2d_hib_sem_barrier \
   hopscotch2d_hib_sem_nobarrier \
-  hopscotch2d_hib_busywait_barrier
+  hopscotch2d_hib_busywait_barrier \
+  hopscotch2d_hib_busywait_nobarrier
 
 .PHONY: all clean
 all: $(APPS)
 
-# Flags por alvo:
+# =========================
+# Flags por família de alvo
+# =========================
 hopscotch2d_serial: TFLAGS := $(CXXFLAGS)
 hopscotch2d_omp_%:  TFLAGS := $(CXXFLAGS) $(OMPFLAGS)
 
+# =========================
 # Regra genérica (serial e OpenMP)
+# =========================
 %: %.cpp
 	$(CXX) $(TFLAGS) $< -o $@ $(LDLIBS)
 
-# Regras específicas para as versões híbridas (MPI+OpenMP)
+# =========================
+# Regras específicas (MPI+OpenMP)
+# =========================
 hopscotch2d_hib_naive: hopscotch2d_hib_naive.cpp
+	$(MPICXX) $(CXXFLAGS) $(OMPFLAGS) $(MPI_DEFS) $< -o $@ $(LDLIBS)
+
+hopscotch2d_hib_sem_barrier: hopscotch2d_hib_sem_barrier.cpp
 	$(MPICXX) $(CXXFLAGS) $(OMPFLAGS) $(MPI_DEFS) $< -o $@ $(LDLIBS)
 
 hopscotch2d_hib_sem_nobarrier: hopscotch2d_hib_sem_nobarrier.cpp
 	$(MPICXX) $(CXXFLAGS) $(OMPFLAGS) $(MPI_DEFS) $< -o $@ $(LDLIBS)
 
 hopscotch2d_hib_busywait_barrier: hopscotch2d_hib_busywait_barrier.cpp
+	$(MPICXX) $(CXXFLAGS) $(OMPFLAGS) $(MPI_DEFS) $< -o $@ $(LDLIBS)
+
+hopscotch2d_hib_busywait_nobarrier: hopscotch2d_hib_busywait_nobarrier.cpp
 	$(MPICXX) $(CXXFLAGS) $(OMPFLAGS) $(MPI_DEFS) $< -o $@ $(LDLIBS)
 
 clean:
