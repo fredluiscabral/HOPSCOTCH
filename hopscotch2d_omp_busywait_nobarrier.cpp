@@ -90,6 +90,15 @@ bool load_params_strict(const std::string& fname,
 }
 
 int main() {
+
+    #pragma omp parallel
+    {
+        #pragma omp single
+        {
+            printf("Threads: %d\n", omp_get_num_threads());
+        }
+    }
+
     // ---- Leitura de parâmetros ----
     int N=0, T=0, TILE=0; double alpha=0.0;
     if (!load_params_strict("param.txt", N, alpha, T, TILE)) return 1;
