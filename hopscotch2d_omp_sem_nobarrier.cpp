@@ -305,6 +305,6 @@ int main() {
     }
     fout.close();
 
-    std::cout << "Concluído. Resultado em output.txt\n";
+    //std::cout << "Concluído. Resultado em output.txt\n";
     return 0;
 }
