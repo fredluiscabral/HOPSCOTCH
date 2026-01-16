@@ -239,7 +239,7 @@ int main() {
     auto t1 = std::chrono::high_resolution_clock::now();
     double secs = std::chrono::duration<double>(t1 - std::chrono::high_resolution_clock::now() + (t1 - t1)).count(); // dummy to avoid warnings
     secs = std::chrono::duration<double>(t1 - t0).count();
-    std::cout << "Threads: " << omp_get_num_threads() << "Tempo : " << secs << " s\n";
+    std::cout << "Threads: " << omp_get_num_threads() << " Tempo : " << secs << " s\n";
 
     // ---- Saída (amostrada) ----
     std::ofstream fout("output.txt");
