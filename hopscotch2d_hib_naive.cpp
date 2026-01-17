@@ -232,7 +232,7 @@ int main(int argc, char** argv) {
     {
         for (int step=0; step<T; ++step){
             // ===== Fase 1 (explícita): escreve U_old a partir de U_new em (i+j+m) par =====
-            #pragma omp for collapse(2) schedule(static)
+            #pragma omp for
             for (int ii=1; ii<=ni; ii+=TILE){
                 for (int jj=1; jj<=nj; jj+=TILE){
                     const int i_end = std::min(ni, ii+TILE-1);
@@ -259,7 +259,7 @@ int main(int argc, char** argv) {
             #pragma omp barrier
 
             // ===== Fase 2 (semi-implícita): escreve U_old em (i+j+m) ímpar =====
-            #pragma omp for collapse(2) schedule(static)
+            #pragma omp for
             for (int ii=1; ii<=ni; ii+=TILE){
                 for (int jj=1; jj<=nj; jj+=TILE){
                     const int i_end = std::min(ni, ii+TILE-1);
@@ -283,7 +283,7 @@ int main(int argc, char** argv) {
             #pragma omp barrier
 
             // ===== Fase 3 (explícita): escreve U_new a partir de U_old em (i+j+m) par =====
-            #pragma omp for collapse(2) schedule(static)
+            #pragma omp for
             for (int ii=1; ii<=ni; ii+=TILE){
                 for (int jj=1; jj<=nj; jj+=TILE){
                     const int i_end = std::min(ni, ii+TILE-1);
@@ -310,7 +310,7 @@ int main(int argc, char** argv) {
             #pragma omp barrier
 
             // ===== Fase 4 (semi-implícita): escreve U_new em (i+j+m) ímpar =====
-            #pragma omp for collapse(2) schedule(static)
+            #pragma omp for
             for (int ii=1; ii<=ni; ii+=TILE){
                 for (int jj=1; jj<=nj; jj+=TILE){
                     const int i_end = std::min(ni, ii+TILE-1);

@@ -1,18 +1,35 @@
 // hopscotch2d_hib_naive_instrumented.cpp
-// Equação do calor 2D (Hopscotch) — versão HÍBRIDA MPI+OpenMP com block tiling.
-// + Instrumentação de métricas para identificação de parâmetros do modelo:
-//   - Por fase (φ=1..4) e por passo (step)
-//   - Por rank (MPI) e usando todos os threads (OpenMP)
-//   - Log JSONL: metrics_hib_naive_rank<rank>.jsonl
+// Equação do calor 2D (Hopscotch) — versão HÍBRIDA MPI+OpenMP com block tiling (naive).
+//
+// Instrumentação para validação do modelo (sec:validacao-metodologia):
+//  - Por fase φ=1..4 e por passo: T_phi (parede), T_step (parede)
+//  - Por thread e fase: C_t^(φ) (tempo de computação do trecho do stencil; exclui barreiras)
+//    -> reporta max/min/mean por fase.
+//  - Comunicação (híbrido): T_comm^(φ) ao redor de exchange_halo() (MPI_Wtime).
+//  - Estimativa observável do custo de barreira por fase (naive, sem sobreposição):
+//        Cbar_hat^(φ) = T_phi - max_t C_t^(φ) - T_comm^(φ)
+//
+// Saída de métricas:
+//  - Um arquivo JSONL por rank.
+//  - Diretório via env METRICS_PATH (default: .)
+//    Arquivo: <METRICS_PATH>/hib_naive.rank<rank>.jsonl
+//  - Variáveis úteis:
+//      METRICS=0/1            (default 1)
+//      METRICS_DETAIL=0/1     (default 0)  -> log por passo e por fase (muito mais linhas)
+//      DELAY_US (>=0)         (default 0)  -> atraso artificial (microsegundos) para E1 (beta)
+//      DELAY_TID (>=0)        (default 0)  -> thread alvo do atraso
+//      DELAY_PHASE (0..4)     (default 0)  -> fase alvo (0 desliga; 1..4 ativa)
 //
 // Compilar:
-//   mpicxx -O3 -march=native -fopenmp -DOMPI_SKIP_MPICXX=1 -DMPICH_SKIP_MPICXX=1 \
-//          hopscotch2d_hib_naive_instrumented.cpp -o hopscotch2d_hib_naive_instrumented
+//   mpicxx -O3 -march=native -fopenmp -pthread -DOMPI_SKIP_MPICXX=1 -DMPICH_SKIP_MPICXX=1 \
+//          hopscotch2d_hib_naive_instrumented.cpp -o hopscotch2d_hib_naive_instrumented -lm
 //
 // Executar (exemplo OpenMPI):
-//   mpirun -np 2 --map-by ppr:1:socket:PE=48 --bind-to core \
-//          -x OMP_NUM_THREADS=48 -x OMP_PLACES=cores -x OMP_PROC_BIND=spread \
-//          ./hopscotch2d_hib_naive_instrumented
+//   export OMP_PLACES=cores OMP_PROC_BIND=spread OMP_NUM_THREADS=16
+//   export METRICS_PATH=./metrics
+//   mpirun -np 2 --bind-to core --map-by ppr:1:socket:PE=16 ./hopscotch2d_hib_naive_instrumented
+//
+// Observação: a saída principal (stdout) e output.txt seguem o comportamento do código original.
 
 #include <mpi.h>
 #include <omp.h>
@@ -32,7 +49,9 @@
 #include <cctype>
 #include <cstdint>
 #include <iomanip>
-#include <limits>
+#include <filesystem>
+
+namespace fs = std::filesystem;
 
 // ----------------- Utils -----------------
 static inline std::string ltrim(std::string s) {
@@ -51,9 +70,26 @@ static inline std::string tolower_str(std::string s){
     return s;
 }
 
+static inline int getenv_int(const char* name, int defv) {
+    const char* s = std::getenv(name);
+    if (!s || !*s) return defv;
+    try { return std::stoi(s); } catch (...) { return defv; }
+}
+static inline std::string getenv_str(const char* name, const std::string& defv) {
+    const char* s = std::getenv(name);
+    if (!s || !*s) return defv;
+    return std::string(s);
+}
+static inline void spin_delay_us(int delay_us) {
+    if (delay_us <= 0) return;
+    const double t0 = omp_get_wtime();
+    const double dt = static_cast<double>(delay_us) * 1e-6;
+    while ((omp_get_wtime() - t0) < dt) { /* busy wait */ }
+}
+
 // índice linear local (com halo) — L = (nj+2)
 static inline size_t idx2(int i, int j, int L) {
-    return static_cast<size_t>(i) * L + j;
+    return static_cast<size_t>(i) * static_cast<size_t>(L) + static_cast<size_t>(j);
 }
 
 static bool load_params_strict_rank0(const std::string& fname,
@@ -106,7 +142,6 @@ static inline void split_range(int total, int parts, int coord, int& start, int&
 }
 
 // Troca de halos (Sendrecv). A tem dimensões locais (ni+2) x (nj+2)
-// (instrumentação de tempo será feita fora, por quem chama)
 static void exchange_halo(std::vector<double>& A, int ni, int nj,
                           int nbr_north, int nbr_south, int nbr_west, int nbr_east,
                           MPI_Datatype col_t, MPI_Comm comm)
@@ -140,6 +175,13 @@ static void exchange_halo(std::vector<double>& A, int ni, int nj,
     }
 }
 
+static inline void json_write_array4(std::ostream& os, const double a[4]) {
+    os << "[" << a[0] << "," << a[1] << "," << a[2] << "," << a[3] << "]";
+}
+static inline void json_write_array4_i(std::ostream& os, const int a[4]) {
+    os << "[" << a[0] << "," << a[1] << "," << a[2] << "," << a[3] << "]";
+}
+
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
 
@@ -158,6 +200,15 @@ int main(int argc, char** argv) {
     MPI_Bcast(&alpha, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     MPI_Bcast(&T, 1, MPI_INT,    0, MPI_COMM_WORLD);
     MPI_Bcast(&TILE, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+    // Instrumentação: flags
+    const int metrics_on = getenv_int("METRICS", 1);
+    const int metrics_detail = getenv_int("METRICS_DETAIL", 0);
+
+    // Delay artificial (E1 - beta)
+    const int delay_us   = std::max(0, getenv_int("DELAY_US", 0));
+    const int delay_tid  = std::max(0, getenv_int("DELAY_TID", 0));
+    const int delay_phi  = std::max(0, getenv_int("DELAY_PHASE", 0)); // 0..4
 
     // Discretização
     const double h   = 1.0 / (N - 1);
@@ -211,7 +262,6 @@ int main(int argc, char** argv) {
             U_new[idx2(i,j,L)] = std::exp(-D*((x-x0)*(x-x0)+(y-y0)*(y-y0)));
         }
     }
-    // Bordas externas permanecem 0.0 (Dirichlet)
 
     // Datatype de coluna (halo vertical)
     MPI_Datatype COL_T;
@@ -221,60 +271,96 @@ int main(int argc, char** argv) {
     // Halo inicial de U_new (para o passo 0)
     exchange_halo(U_new, ni, nj, nbr_north, nbr_south, nbr_west, nbr_east, COL_T, cart);
 
-    // Arquivo de métricas (um por rank)
-    std::ostringstream mname;
-    mname << "metrics_hib_naive_rank" << world_rank << ".jsonl";
-    std::ofstream mlog(mname.str());
-    if (!mlog) {
-        std::cerr << "Erro: não foi possível abrir " << mname.str() << " para escrita\n";
-        MPI_Abort(MPI_COMM_WORLD, 2);
+    // ===== Log de métricas (por rank) =====
+    std::ofstream mlog;
+    std::string metrics_dir = getenv_str("METRICS_PATH", ".");
+    std::string omp_places = getenv_str("OMP_PLACES", "");
+    std::string omp_bind   = getenv_str("OMP_PROC_BIND", "");
+
+    if (metrics_on) {
+        try {
+            fs::create_directories(metrics_dir);
+        } catch (...) {
+            if (world_rank==0) {
+                std::cerr << "Aviso: não consegui criar METRICS_PATH='" << metrics_dir
+                          << "'. Usando diretório atual.\n";
+            }
+            metrics_dir = ".";
+        }
+        std::ostringstream fn;
+        fn << metrics_dir << "/hib_naive.rank" << world_rank << ".jsonl";
+        mlog.open(fn.str(), std::ios::out);
+        if (!mlog) {
+            std::cerr << "Erro: não foi possível abrir arquivo de métricas '" << fn.str() << "'.\n";
+            MPI_Abort(cart, 2);
+        }
+        mlog.setf(std::ios::fixed);
+        mlog << std::setprecision(9);
+
+        mlog << "{"
+             << "\"type\":\"run\","
+             << "\"variant\":\"hib_naive\","
+             << "\"rank\":" << world_rank << ",\"ranks\":" << world_size
+             << ",\"Px\":" << Px << ",\"Qy\":" << Qy
+             << ",\"N\":" << N << ",\"alpha\":" << alpha << ",\"T\":" << T << ",\"tile\":" << TILE
+             << ",\"ni\":" << ni << ",\"nj\":" << nj
+             << ",\"dt\":" << dt << ",\"lam\":" << lam
+             << ",\"omp_places\":\"" << omp_places << "\","
+             << "\"omp_proc_bind\":\"" << omp_bind << "\","
+             << "\"delay_us\":" << delay_us << ",\"delay_tid\":" << delay_tid << ",\"delay_phase\":" << delay_phi
+             << "}\n";
     }
-    mlog.setf(std::ios::fixed);
-    mlog << std::setprecision(6);
 
-    // Cabeçalho de execução
-    mlog << "{"
-         << "\"type\":\"run\",\"variant\":\"hib_naive\",\"rank\":" << world_rank
-         << ",\"ranks\":" << world_size << ",\"Px\":" << Px << ",\"Qy\":" << Qy
-         << ",\"N\":" << N << ",\"alpha\":" << alpha << ",\"T\":" << T
-         << ",\"TILE\":" << TILE << "}\n";
-
-    // Integração temporal + instrumentação
+    // Integração temporal
     int m = 0; // paridade global
+
     MPI_Barrier(cart);
     const double t0 = MPI_Wtime();
 
-    // Alocação para coletar tempos de computação por thread e fase
-    const int max_threads = omp_get_max_threads();
-    std::vector<std::vector<double>> comp_by_thread(4, std::vector<double>(max_threads, 0.0));
+    const int max_threads = std::max(1, omp_get_max_threads());
+    std::vector<double> comp(4 * static_cast<size_t>(max_threads), 0.0);
+
+    // agregadores (somatórios em steps)
+    double Tphi_sum[4] = {0,0,0,0};
+    double comm_sum[4] = {0,0,0,0};
+    double compmax_sum[4] = {0,0,0,0};
+    double compmin_sum[4] = {0,0,0,0};
+    double compmean_sum[4] = {0,0,0,0};
+    double deltaimb_sum[4] = {0,0,0,0};
+    double cbarhat_sum[4] = {0,0,0,0};
+    double Tstep_sum = 0.0;
+    int actual_nt = 0;
+
+    
+    // Variáveis de timing compartilhadas (single/master podem ser executados por threads diferentes)
+    double step_t0_s = 0.0;
+    double phi_t0_s  = 0.0;
+    double comm_phi_s = 0.0;
+
 
     #pragma omp parallel default(none) \
         shared(N,T,TILE,lam,denom,U_new,U_old,m,ni,nj,ig0,jg0,cart, \
-               nbr_north,nbr_south,nbr_west,nbr_east,COL_T,L,mlog,comp_by_thread, \
-               world_rank,world_size,Px,Qy,alpha)
+               nbr_north,nbr_south,nbr_west,nbr_east,COL_T,L, \
+               metrics_on,metrics_detail,mlog,comp,max_threads, \
+               Tphi_sum,comm_sum,compmax_sum,compmin_sum,compmean_sum,deltaimb_sum,cbarhat_sum, \
+               Tstep_sum,actual_nt,world_rank,world_size,Px,Qy,alpha,dt,delay_us,delay_tid,delay_phi, \
+               step_t0_s,phi_t0_s,comm_phi_s)
     {
         const int tid = omp_get_thread_num();
 
-        for (int step=0; step<T; ++step){
-            // --- Acumuladores por passo (só usados em single)
-            double step_halo_sum = 0.0;
-            double step_cbar_sum = 0.0;
-            double step_compmax_sum = 0.0;
-            double step_start = 0.0;
+        for (int step=0; step<T; ++step) {
 
             #pragma omp single
             {
-                step_start = MPI_Wtime();
-                // zera buffers por fase
-                for (int ph=0; ph<4; ++ph)
-                    std::fill(comp_by_thread[ph].begin(), comp_by_thread[ph].end(), 0.0);
+                step_t0_s = omp_get_wtime();
+                if (actual_nt == 0) actual_nt = omp_get_num_threads();
             }
 
-            // =========================================================
-            // ===== Fase 1 (explícita): U_old <- U_new em (i+j+m) par
-            double phi1_start = MPI_Wtime();
-            double tcomp0 = omp_get_wtime();
+            // ----------------- FASE 1 -----------------
+            #pragma omp single
+            { phi_t0_s = omp_get_wtime(); }
 
+            double c0 = omp_get_wtime();
             #pragma omp for collapse(2) schedule(static) nowait
             for (int ii=1; ii<=ni; ii+=TILE){
                 for (int jj=1; jj<=nj; jj+=TILE){
@@ -296,58 +382,65 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            double tcomp1 = omp_get_wtime();
-            comp_by_thread[0][tid] = tcomp1 - tcomp0;
+            if (delay_us > 0 && delay_phi == 1 && tid == delay_tid) spin_delay_us(delay_us);
+            double c1 = omp_get_wtime();
+            comp[0*max_threads + tid] = c1 - c0;
 
-            // Garante término do for antes do halo
             #pragma omp barrier
-
-            double halo1 = 0.0;
             #pragma omp master
             {
-                double hs = MPI_Wtime();
+                const double cs = MPI_Wtime();
                 exchange_halo(U_old, ni, nj, nbr_north, nbr_south, nbr_west, nbr_east, COL_T, cart);
-                double he = MPI_Wtime();
-                halo1 = he - hs;
+                const double ce = MPI_Wtime();
+                comm_phi_s = ce - cs;
             }
             #pragma omp barrier
-            double phi1_end = MPI_Wtime();
 
             #pragma omp single
             {
+                const double phi_t1 = omp_get_wtime();
                 const int nt = omp_get_num_threads();
-                double cmax=-1e300, cmin=1e300, csum=0.0;
-                for (int t=0; t<nt; ++t){
-                    cmax = std::max(cmax, comp_by_thread[0][t]);
-                    cmin = std::min(cmin, comp_by_thread[0][t]);
-                    csum += comp_by_thread[0][t];
-                }
-                double cmean = csum / nt;
-                double phase_wall = phi1_end - phi1_start;
-                double cbar_hat = phase_wall - cmax - halo1;
-                step_halo_sum += halo1;
-                step_cbar_sum += cbar_hat;
-                step_compmax_sum += cmax;
 
-                mlog << "{"
-                     << "\"type\":\"phase\",\"variant\":\"hib_naive\",\"rank\":" << world_rank
-                     << ",\"ranks\":" << world_size << ",\"nt\":" << nt
-                     << ",\"Px\":" << Px << ",\"Qy\":" << Qy
-                     << ",\"N\":" << N << ",\"alpha\":" << alpha << ",\"TILE\":" << TILE
-                     << ",\"step\":" << step << ",\"phi\":1"
-                     << ",\"t_wall\":" << phase_wall
-                     << ",\"comp_max\":" << cmax << ",\"comp_min\":" << cmin
-                     << ",\"comp_mean\":" << cmean
-                     << ",\"halo\":" << halo1
-                     << ",\"cbar_hat\":" << cbar_hat
-                     << "}\n";
+                double cmax = -1e300, cmin = 1e300, csum=0.0;
+                for (int t=0; t<nt; ++t) {
+                    const double ct = comp[0*max_threads + t];
+                    cmax = std::max(cmax, ct);
+                    cmin = std::min(cmin, ct);
+                    csum += ct;
+                }
+                const double cmean = csum / nt;
+                const double Tphi = phi_t1 - phi_t0_s;
+                const double delta = cmax - cmin;
+                const double cbar_hat = Tphi - cmax - comm_phi_s;
+
+                Tphi_sum[0] += Tphi;
+                comm_sum[0] += comm_phi_s;
+                compmax_sum[0] += cmax;
+                compmin_sum[0] += cmin;
+                compmean_sum[0] += cmean;
+                deltaimb_sum[0] += delta;
+                cbarhat_sum[0] += cbar_hat;
+
+                if (metrics_on && metrics_detail) {
+                    mlog << "{"
+                         << "\"type\":\"phase\",\"rank\":" << world_rank
+                         << ",\"step\":" << step << ",\"phi\":1"
+                         << ",\"Tphi\":" << Tphi
+                         << ",\"comm\":" << comm_phi_s
+                         << ",\"comp_max\":" << cmax
+                         << ",\"comp_min\":" << cmin
+                         << ",\"comp_mean\":" << cmean
+                         << ",\"delta_imb\":" << delta
+                         << ",\"Cbar_hat\":" << cbar_hat
+                         << "}\n";
+                }
             }
 
-            // =========================================================
-            // ===== Fase 2 (semi-implícita): U_old em (i+j+m) ímpar
-            double phi2_start = MPI_Wtime();
-            tcomp0 = omp_get_wtime();
+            // ----------------- FASE 2 -----------------
+            #pragma omp single
+            { phi_t0_s = omp_get_wtime(); }
 
+            c0 = omp_get_wtime();
             #pragma omp for collapse(2) schedule(static) nowait
             for (int ii=1; ii<=ni; ii+=TILE){
                 for (int jj=1; jj<=nj; jj+=TILE){
@@ -366,56 +459,65 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            tcomp1 = omp_get_wtime();
-            comp_by_thread[1][tid] = tcomp1 - tcomp0;
+            if (delay_us > 0 && delay_phi == 2 && tid == delay_tid) spin_delay_us(delay_us);
+            c1 = omp_get_wtime();
+            comp[1*max_threads + tid] = c1 - c0;
 
             #pragma omp barrier
-            double halo2 = 0.0;
             #pragma omp master
             {
-                double hs = MPI_Wtime();
+                const double cs = MPI_Wtime();
                 exchange_halo(U_old, ni, nj, nbr_north, nbr_south, nbr_west, nbr_east, COL_T, cart);
-                double he = MPI_Wtime();
-                halo2 = he - hs;
+                const double ce = MPI_Wtime();
+                comm_phi_s = ce - cs;
             }
             #pragma omp barrier
-            double phi2_end = MPI_Wtime();
 
             #pragma omp single
             {
+                const double phi_t1 = omp_get_wtime();
                 const int nt = omp_get_num_threads();
-                double cmax=-1e300, cmin=1e300, csum=0.0;
-                for (int t=0; t<nt; ++t){
-                    cmax = std::max(cmax, comp_by_thread[1][t]);
-                    cmin = std::min(cmin, comp_by_thread[1][t]);
-                    csum += comp_by_thread[1][t];
-                }
-                double cmean = csum / nt;
-                double phase_wall = phi2_end - phi2_start;
-                double cbar_hat = phase_wall - cmax - halo2;
-                step_halo_sum += halo2;
-                step_cbar_sum += cbar_hat;
-                step_compmax_sum += cmax;
 
-                mlog << "{"
-                     << "\"type\":\"phase\",\"variant\":\"hib_naive\",\"rank\":" << world_rank
-                     << ",\"ranks\":" << world_size << ",\"nt\":" << nt
-                     << ",\"Px\":" << Px << ",\"Qy\":" << Qy
-                     << ",\"N\":" << N << ",\"alpha\":" << alpha << ",\"TILE\":" << TILE
-                     << ",\"step\":" << step << ",\"phi\":2"
-                     << ",\"t_wall\":" << phase_wall
-                     << ",\"comp_max\":" << cmax << ",\"comp_min\":" << cmin
-                     << ",\"comp_mean\":" << cmean
-                     << ",\"halo\":" << halo2
-                     << ",\"cbar_hat\":" << cbar_hat
-                     << "}\n";
+                double cmax = -1e300, cmin = 1e300, csum=0.0;
+                for (int t=0; t<nt; ++t) {
+                    const double ct = comp[1*max_threads + t];
+                    cmax = std::max(cmax, ct);
+                    cmin = std::min(cmin, ct);
+                    csum += ct;
+                }
+                const double cmean = csum / nt;
+                const double Tphi = phi_t1 - phi_t0_s;
+                const double delta = cmax - cmin;
+                const double cbar_hat = Tphi - cmax - comm_phi_s;
+
+                Tphi_sum[1] += Tphi;
+                comm_sum[1] += comm_phi_s;
+                compmax_sum[1] += cmax;
+                compmin_sum[1] += cmin;
+                compmean_sum[1] += cmean;
+                deltaimb_sum[1] += delta;
+                cbarhat_sum[1] += cbar_hat;
+
+                if (metrics_on && metrics_detail) {
+                    mlog << "{"
+                         << "\"type\":\"phase\",\"rank\":" << world_rank
+                         << ",\"step\":" << step << ",\"phi\":2"
+                         << ",\"Tphi\":" << Tphi
+                         << ",\"comm\":" << comm_phi_s
+                         << ",\"comp_max\":" << cmax
+                         << ",\"comp_min\":" << cmin
+                         << ",\"comp_mean\":" << cmean
+                         << ",\"delta_imb\":" << delta
+                         << ",\"Cbar_hat\":" << cbar_hat
+                         << "}\n";
+                }
             }
 
-            // =========================================================
-            // ===== Fase 3 (explícita): U_new <- U_old em (i+j+m) par
-            double phi3_start = MPI_Wtime();
-            tcomp0 = omp_get_wtime();
+            // ----------------- FASE 3 -----------------
+            #pragma omp single
+            { phi_t0_s = omp_get_wtime(); }
 
+            c0 = omp_get_wtime();
             #pragma omp for collapse(2) schedule(static) nowait
             for (int ii=1; ii<=ni; ii+=TILE){
                 for (int jj=1; jj<=nj; jj+=TILE){
@@ -437,56 +539,65 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            tcomp1 = omp_get_wtime();
-            comp_by_thread[2][tid] = tcomp1 - tcomp0;
+            if (delay_us > 0 && delay_phi == 3 && tid == delay_tid) spin_delay_us(delay_us);
+            c1 = omp_get_wtime();
+            comp[2*max_threads + tid] = c1 - c0;
 
             #pragma omp barrier
-            double halo3 = 0.0;
             #pragma omp master
             {
-                double hs = MPI_Wtime();
+                const double cs = MPI_Wtime();
                 exchange_halo(U_new, ni, nj, nbr_north, nbr_south, nbr_west, nbr_east, COL_T, cart);
-                double he = MPI_Wtime();
-                halo3 = he - hs;
+                const double ce = MPI_Wtime();
+                comm_phi_s = ce - cs;
             }
             #pragma omp barrier
-            double phi3_end = MPI_Wtime();
 
             #pragma omp single
             {
+                const double phi_t1 = omp_get_wtime();
                 const int nt = omp_get_num_threads();
-                double cmax=-1e300, cmin=1e300, csum=0.0;
-                for (int t=0; t<nt; ++t){
-                    cmax = std::max(cmax, comp_by_thread[2][t]);
-                    cmin = std::min(cmin, comp_by_thread[2][t]);
-                    csum += comp_by_thread[2][t];
-                }
-                double cmean = csum / nt;
-                double phase_wall = phi3_end - phi3_start;
-                double cbar_hat = phase_wall - cmax - halo3;
-                step_halo_sum += halo3;
-                step_cbar_sum += cbar_hat;
-                step_compmax_sum += cmax;
 
-                mlog << "{"
-                     << "\"type\":\"phase\",\"variant\":\"hib_naive\",\"rank\":" << world_rank
-                     << ",\"ranks\":" << world_size << ",\"nt\":" << nt
-                     << ",\"Px\":" << Px << ",\"Qy\":" << Qy
-                     << ",\"N\":" << N << ",\"alpha\":" << alpha << ",\"TILE\":" << TILE
-                     << ",\"step\":" << step << ",\"phi\":3"
-                     << ",\"t_wall\":" << phase_wall
-                     << ",\"comp_max\":" << cmax << ",\"comp_min\":" << cmin
-                     << ",\"comp_mean\":" << cmean
-                     << ",\"halo\":" << halo3
-                     << ",\"cbar_hat\":" << cbar_hat
-                     << "}\n";
+                double cmax = -1e300, cmin = 1e300, csum=0.0;
+                for (int t=0; t<nt; ++t) {
+                    const double ct = comp[2*max_threads + t];
+                    cmax = std::max(cmax, ct);
+                    cmin = std::min(cmin, ct);
+                    csum += ct;
+                }
+                const double cmean = csum / nt;
+                const double Tphi = phi_t1 - phi_t0_s;
+                const double delta = cmax - cmin;
+                const double cbar_hat = Tphi - cmax - comm_phi_s;
+
+                Tphi_sum[2] += Tphi;
+                comm_sum[2] += comm_phi_s;
+                compmax_sum[2] += cmax;
+                compmin_sum[2] += cmin;
+                compmean_sum[2] += cmean;
+                deltaimb_sum[2] += delta;
+                cbarhat_sum[2] += cbar_hat;
+
+                if (metrics_on && metrics_detail) {
+                    mlog << "{"
+                         << "\"type\":\"phase\",\"rank\":" << world_rank
+                         << ",\"step\":" << step << ",\"phi\":3"
+                         << ",\"Tphi\":" << Tphi
+                         << ",\"comm\":" << comm_phi_s
+                         << ",\"comp_max\":" << cmax
+                         << ",\"comp_min\":" << cmin
+                         << ",\"comp_mean\":" << cmean
+                         << ",\"delta_imb\":" << delta
+                         << ",\"Cbar_hat\":" << cbar_hat
+                         << "}\n";
+                }
             }
 
-            // =========================================================
-            // ===== Fase 4 (semi-implícita): U_new em (i+j+m) ímpar
-            double phi4_start = MPI_Wtime();
-            tcomp0 = omp_get_wtime();
+            // ----------------- FASE 4 -----------------
+            #pragma omp single
+            { phi_t0_s = omp_get_wtime(); }
 
+            c0 = omp_get_wtime();
             #pragma omp for collapse(2) schedule(static) nowait
             for (int ii=1; ii<=ni; ii+=TILE){
                 for (int jj=1; jj<=nj; jj+=TILE){
@@ -505,89 +616,141 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            tcomp1 = omp_get_wtime();
-            comp_by_thread[3][tid] = tcomp1 - tcomp0;
+            if (delay_us > 0 && delay_phi == 4 && tid == delay_tid) spin_delay_us(delay_us);
+            c1 = omp_get_wtime();
+            comp[3*max_threads + tid] = c1 - c0;
 
             #pragma omp barrier
-            double halo4 = 0.0;
             #pragma omp master
             {
-                double hs = MPI_Wtime();
+                const double cs = MPI_Wtime();
                 exchange_halo(U_new, ni, nj, nbr_north, nbr_south, nbr_west, nbr_east, COL_T, cart);
-                double he = MPI_Wtime();
-                halo4 = he - hs;
+                const double ce = MPI_Wtime();
+                comm_phi_s = ce - cs;
             }
             #pragma omp barrier
-            double phi4_end = MPI_Wtime();
 
             #pragma omp single
             {
+                const double phi_t1 = omp_get_wtime();
                 const int nt = omp_get_num_threads();
-                double cmax=-1e300, cmin=1e300, csum=0.0;
-                for (int t=0; t<nt; ++t){
-                    cmax = std::max(cmax, comp_by_thread[3][t]);
-                    cmin = std::min(cmin, comp_by_thread[3][t]);
-                    csum += comp_by_thread[3][t];
-                }
-                double cmean = csum / nt;
-                double phase_wall = phi4_end - phi4_start;
-                double cbar_hat = phase_wall - cmax - halo4;
-                step_halo_sum += halo4;
-                step_cbar_sum += cbar_hat;
-                step_compmax_sum += cmax;
 
-                mlog << "{"
-                     << "\"type\":\"phase\",\"variant\":\"hib_naive\",\"rank\":" << world_rank
-                     << ",\"ranks\":" << world_size << ",\"nt\":" << nt
-                     << ",\"Px\":" << Px << ",\"Qy\":" << Qy
-                     << ",\"N\":" << N << ",\"alpha\":" << alpha << ",\"TILE\":" << TILE
-                     << ",\"step\":" << step << ",\"phi\":4"
-                     << ",\"t_wall\":" << phase_wall
-                     << ",\"comp_max\":" << cmax << ",\"comp_min\":" << cmin
-                     << ",\"comp_mean\":" << cmean
-                     << ",\"halo\":" << halo4
-                     << ",\"cbar_hat\":" << cbar_hat
-                     << "}\n";
+                double cmax = -1e300, cmin = 1e300, csum=0.0;
+                for (int t=0; t<nt; ++t) {
+                    const double ct = comp[3*max_threads + t];
+                    cmax = std::max(cmax, ct);
+                    cmin = std::min(cmin, ct);
+                    csum += ct;
+                }
+                const double cmean = csum / nt;
+                const double Tphi = phi_t1 - phi_t0_s;
+                const double delta = cmax - cmin;
+                const double cbar_hat = Tphi - cmax - comm_phi_s;
+
+                Tphi_sum[3] += Tphi;
+                comm_sum[3] += comm_phi_s;
+                compmax_sum[3] += cmax;
+                compmin_sum[3] += cmin;
+                compmean_sum[3] += cmean;
+                deltaimb_sum[3] += delta;
+                cbarhat_sum[3] += cbar_hat;
+
+                if (metrics_on && metrics_detail) {
+                    mlog << "{"
+                         << "\"type\":\"phase\",\"rank\":" << world_rank
+                         << ",\"step\":" << step << ",\"phi\":4"
+                         << ",\"Tphi\":" << Tphi
+                         << ",\"comm\":" << comm_phi_s
+                         << ",\"comp_max\":" << cmax
+                         << ",\"comp_min\":" << cmin
+                         << ",\"comp_mean\":" << cmean
+                         << ",\"delta_imb\":" << delta
+                         << ",\"Cbar_hat\":" << cbar_hat
+                         << "}\n";
+                }
             }
 
-            // ===== Alterna paridade (compatível com o código original)
+            // Alterna paridade (mesma lógica do original)
             #pragma omp single
             { m++; }
             #pragma omp single
-            { m++; } // completa o passo (duas alternâncias por passo)
+            { m++; }
 
-            // ===== Log do passo
+            // Tempo do passo
             #pragma omp single
             {
-                double step_end = MPI_Wtime();
-                double t_step = step_end - step_start;
-                mlog << "{"
-                     << "\"type\":\"step\",\"variant\":\"hib_naive\",\"rank\":" << world_rank
-                     << ",\"step\":" << step
-                     << ",\"t_wall\":" << t_step
-                     << ",\"halo_sum\":" << step_halo_sum
-                     << ",\"cbar_hat_sum\":" << step_cbar_sum
-                     << ",\"comp_max_sum\":" << step_compmax_sum
-                     << "}\n";
+                const double step_t1 = omp_get_wtime();
+                const double Tstep = step_t1 - step_t0_s;
+                Tstep_sum += Tstep;
+
+                if (metrics_on && metrics_detail) {
+                    mlog << "{"
+                         << "\"type\":\"step\",\"rank\":" << world_rank
+                         << ",\"step\":" << step
+                         << ",\"Tstep\":" << Tstep
+                         << "}\n";
+                }
             }
-        } // end for step
-    } // end parallel
+        } // step
+    } // parallel
+    
+
 
     const double t1 = MPI_Wtime();
-    double elapsed = t1 - t0;
+    const double elapsed_local = t1 - t0;
+
+    // mantém stdout igual ao original (max rank)
     double elapsed_max = 0.0;
-    MPI_Reduce(&elapsed, &elapsed_max, 1, MPI_DOUBLE, MPI_MAX, 0, cart);
+    MPI_Reduce(&elapsed_local, &elapsed_max, 1, MPI_DOUBLE, MPI_MAX, 0, cart);
+    MPI_Bcast(&elapsed_max, 1, MPI_DOUBLE, 0, cart);
+
     if (world_rank==0){
-        std::cout << "Tempo total (max rank): " << std::setprecision(6) << std::fixed
-                  << elapsed_max << " s\n";
-        std::cout << "Métricas por rank em: metrics_hib_naive_rank<R>.jsonl\n";
+        std::cout << "Tempo: " << std::setprecision(6) << std::fixed << elapsed_max << " s\n";
+    }
+
+    // ===== summary por rank (médias por passo) =====
+    if (metrics_on) {
+        const double invT = (T > 0) ? 1.0 / static_cast<double>(T) : 0.0;
+
+        double Tphi_mean[4], comm_mean[4], compmax_mean[4], compmin_mean[4], compmean_mean[4], deltaimb_mean[4], cbarhat_mean[4];
+        for (int k=0; k<4; ++k) {
+            Tphi_mean[k] = Tphi_sum[k] * invT;
+            comm_mean[k] = comm_sum[k] * invT;
+            compmax_mean[k] = compmax_sum[k] * invT;
+            compmin_mean[k] = compmin_sum[k] * invT;
+            compmean_mean[k] = compmean_sum[k] * invT;
+            deltaimb_mean[k] = deltaimb_sum[k] * invT;
+            cbarhat_mean[k] = cbarhat_sum[k] * invT;
+        }
+        const double Tstep_mean = Tstep_sum * invT;
+
+        mlog << "{"
+             << "\"type\":\"summary\","
+             << "\"variant\":\"hib_naive\","
+             << "\"rank\":" << world_rank << ",\"ranks\":" << world_size
+             << ",\"nt\":" << actual_nt
+             << ",\"elapsed_local\":" << elapsed_local
+             << ",\"elapsed_max\":" << elapsed_max
+             << ",\"Tstep_mean\":" << Tstep_mean
+             << ",\"Tphi_mean\":"; json_write_array4(mlog, Tphi_mean);
+        mlog << ",\"Tcomm_mean\":"; json_write_array4(mlog, comm_mean);
+        mlog << ",\"comp_max_mean\":"; json_write_array4(mlog, compmax_mean);
+        mlog << ",\"comp_min_mean\":"; json_write_array4(mlog, compmin_mean);
+        mlog << ",\"comp_mean_mean\":"; json_write_array4(mlog, compmean_mean);
+        mlog << ",\"delta_imb_mean\":"; json_write_array4(mlog, deltaimb_mean);
+        mlog << ",\"Cbar_hat_mean\":"; json_write_array4(mlog, cbarhat_mean);
+        mlog << "}\n";
+
+        mlog.close();
     }
 
     // ===================== SAÍDA ÚNICA (output.txt) =====================
-    // (idêntica ao original)
+    // Cada rank prepara suas amostras interiores cujo índice global é múltiplo de 16.
+    // O rank 0 coleta (Gatherv), ordena por (i,j) global e escreve:
     std::vector<int> ig_local, jg_local;
     std::vector<double> val_local;
 
+    // Primeiro índice local que cai num múltiplo de 16 no global
     auto first_on_stride = [](int global_start)->int {
         int r = (16 - (global_start % 16)) % 16;
         return 1 + r; // converte de global para local (i=1..)
@@ -599,6 +762,7 @@ int main(int argc, char** argv) {
         int ig = ig0 + (i-1);
         for (int j = j_first; j <= nj; j += 16) {
             int jg = jg0 + (j-1);
+            // Só interior (bordas 0/N-1 serão escritas como 0.0 pelo rank 0)
             if (ig>=1 && ig<=N-2 && jg>=1 && jg<=N-2) {
                 ig_local.push_back(ig);
                 jg_local.push_back(jg);
@@ -639,7 +803,8 @@ int main(int argc, char** argv) {
 
     if (world_rank==0) {
         std::unordered_map<uint64_t,double> mapv;
-        mapv.reserve(static_cast<size_t>(gtot)*1.3);
+        mapv.reserve(static_cast<size_t>(gtot)*2u + 32u);
+
         auto key = [](int ig, int jg)->uint64_t {
             return (static_cast<uint64_t>(static_cast<uint32_t>(ig))<<32)
                  |  static_cast<uint32_t>(jg);
@@ -651,7 +816,7 @@ int main(int argc, char** argv) {
         std::ofstream fout("output.txt");
         if (!fout) {
             std::cerr << "Erro: não foi possível abrir output.txt para escrita\n";
-            MPI_Abort(MPI_COMM_WORLD, 2);
+            MPI_Abort(cart, 2);
         }
         fout.setf(std::ios::fixed);
         fout.precision(8);
@@ -670,7 +835,6 @@ int main(int argc, char** argv) {
         }
         fout.close();
     }
-    // ====================================================================
 
     MPI_Type_free(&COL_T);
     MPI_Comm_free(&cart);
