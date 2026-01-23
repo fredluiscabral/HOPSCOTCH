@@ -154,6 +154,21 @@ int main(int argc, char** argv) {
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
     }
+
+    if (world_rank == 0) {
+        printf("MPI processes: %d\n", world_size);
+        fflush(stdout);
+    }
+
+    #pragma omp parallel
+    {
+        #pragma omp single
+        {
+            printf("Threads: %d\n", omp_get_num_threads());
+        }
+    }
+
+
     MPI_Bcast(&N, 1, MPI_INT,    0, MPI_COMM_WORLD);
     MPI_Bcast(&alpha, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     MPI_Bcast(&T, 1, MPI_INT,    0, MPI_COMM_WORLD);
