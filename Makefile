@@ -1,86 +1,45 @@
-# Makefile — compila versões: serial, OpenMP (naive/semáforos/busy-wait) e híbrida MPI+OpenMP
-# Uso:
-#   make            # modo "fast"
-#   make MODE=safe  # modo "safe" (sem fast-math)
-#   make clean
-
-CXX    ?= g++
 MPICXX ?= mpicxx
-MODE   ?= fast
+BUILD_DIR ?= build
 
-# Flags comuns (silencia -Wcomment por causa de comentários com '\')
-COMMON_FLAGS := -std=c++17 -Wall -Wextra -Wno-unused-parameter -Wno-comment
+OPT ?= -O3
+DBG ?= -g -fno-omit-frame-pointer -fno-optimize-sibling-calls
+OPENMP ?= -fopenmp
+WARN ?= -Wall -Wextra -Wshadow -Wundef -Wno-unused-parameter
+DEFS ?= -D_GNU_SOURCE
 
-# Modo agressivo
-FAST_FLAGS := -Ofast -flto -march=native -mtune=native \
-              -ffast-math -fno-math-errno -funroll-loops \
-              -fomit-frame-pointer -falign-functions=32 -falign-loops=32
+CXXFLAGS ?= -std=c++17 $(WARN) $(OPT) $(DBG) $(OPENMP) $(DEFS)
+LDFLAGS ?=
+LDLIBS ?= -lm -pthread
 
-# Modo "safe"
-SAFE_FLAGS := -O3 -flto -march=native -mtune=native \
-              -funroll-loops -fomit-frame-pointer
+# Se tiver arquivos comuns C++ (sem main), liste aqui:
+COMMON_CPP ?=
+COMMON_OBJS := $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(COMMON_CPP))
 
-ifeq ($(MODE),fast)
-  CXXFLAGS := $(COMMON_FLAGS) $(FAST_FLAGS)
-else
-  CXXFLAGS := $(COMMON_FLAGS) $(SAFE_FLAGS)
-endif
+NAIVE_SRC     ?= hopscotch2d_hib_naive.cpp
+BUSYWAIT_SRC  ?= hopscotch2d_hib_busywait_nobarrier.cpp
+SEMAPHORE_SRC ?= hopscotch2d_hib_sem_nobarrier.cpp
 
-# OpenMP e MPI
-OMPFLAGS   := -fopenmp -pthread
-# Evita incluir os C++ bindings obsoletos do MPI (elimina warnings)
-MPI_DEFS   := -DOMPI_SKIP_MPICXX=1 -DMPICH_SKIP_MPICXX=1
-
-LDLIBS := -lm
-
-# =========================
-# Alvos
-# =========================
-APPS := \
-  hopscotch2d_serial \
-  hopscotch2d_omp_naive \
-  hopscotch2d_omp_semaphores \
-  hopscotch2d_omp_sem_nobarrier \
-  hopscotch2d_omp_busywait_barrier \
-  hopscotch2d_omp_busywait_nobarrier \
-  hopscotch2d_hib_naive \
-  hopscotch2d_hib_sem_barrier \
-  hopscotch2d_hib_sem_nobarrier \
-  hopscotch2d_hib_busywait_barrier \
-  hopscotch2d_hib_busywait_nobarrier
+NAIVE_OBJ     := $(BUILD_DIR)/hopscotch2d_hib_naive.o
+BUSYWAIT_OBJ  := $(BUILD_DIR)/hopscotch2d_hib_busywait_nobarrier.o
+SEMAPHORE_OBJ := $(BUILD_DIR)/hopscotch2d_hib_sem_nobarrier.o
 
 .PHONY: all clean
-all: $(APPS)
+all: hopscotch2d_hib_naive hopscotch2d_hib_busywait_nobarrier hopscotch2d_hib_sem_nobarrier
 
-# =========================
-# Flags por família de alvo
-# =========================
-hopscotch2d_serial: TFLAGS := $(CXXFLAGS)
-hopscotch2d_omp_%:  TFLAGS := $(CXXFLAGS) $(OMPFLAGS)
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
 
-# =========================
-# Regra genérica (serial e OpenMP)
-# =========================
-%: %.cpp
-	$(CXX) $(TFLAGS) $< -o $@ $(LDLIBS)
+$(BUILD_DIR)/%.o: %.cpp | $(BUILD_DIR)
+	$(MPICXX) $(CXXFLAGS) -c $< -o $@
 
-# =========================
-# Regras específicas (MPI+OpenMP)
-# =========================
-hopscotch2d_hib_naive: hopscotch2d_hib_naive.cpp
-	$(MPICXX) $(CXXFLAGS) $(OMPFLAGS) $(MPI_DEFS) $< -o $@ $(LDLIBS)
+hopscotch2d_hib_naive: $(COMMON_OBJS) $(NAIVE_OBJ)
+	$(MPICXX) $(CXXFLAGS) $(LDFLAGS) $^ -o $@ $(LDLIBS)
 
-hopscotch2d_hib_sem_barrier: hopscotch2d_hib_sem_barrier.cpp
-	$(MPICXX) $(CXXFLAGS) $(OMPFLAGS) $(MPI_DEFS) $< -o $@ $(LDLIBS)
+hopscotch2d_hib_busywait_nobarrier: $(COMMON_OBJS) $(BUSYWAIT_OBJ)
+	$(MPICXX) $(CXXFLAGS) $(LDFLAGS) $^ -o $@ $(LDLIBS)
 
-hopscotch2d_hib_sem_nobarrier: hopscotch2d_hib_sem_nobarrier.cpp
-	$(MPICXX) $(CXXFLAGS) $(OMPFLAGS) $(MPI_DEFS) $< -o $@ $(LDLIBS)
-
-hopscotch2d_hib_busywait_barrier: hopscotch2d_hib_busywait_barrier.cpp
-	$(MPICXX) $(CXXFLAGS) $(OMPFLAGS) $(MPI_DEFS) $< -o $@ $(LDLIBS)
-
-hopscotch2d_hib_busywait_nobarrier: hopscotch2d_hib_busywait_nobarrier.cpp
-	$(MPICXX) $(CXXFLAGS) $(OMPFLAGS) $(MPI_DEFS) $< -o $@ $(LDLIBS)
+hopscotch2d_hib_sem_nobarrier: $(COMMON_OBJS) $(SEMAPHORE_OBJ)
+	$(MPICXX) $(CXXFLAGS) $(LDFLAGS) $^ -o $@ $(LDLIBS)
 
 clean:
-	rm -f $(APPS) *.o
+	rm -rf $(BUILD_DIR) hopscotch2d_hib_naive hopscotch2d_hib_busywait_nobarrier hopscotch2d_hib_sem_nobarrier
