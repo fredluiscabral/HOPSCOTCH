@@ -130,6 +130,19 @@ int main(int argc, char** argv)
         MPI_Abort(COMM, 1); return 1;
     }
 
+    if (rank == 0) {
+        printf("MPI processes: %d\n", nprocs);
+        fflush(stdout);
+    }
+
+    #pragma omp parallel
+    {
+        #pragma omp single
+        {
+            printf("Threads: %d\n", omp_get_num_threads());
+        }
+    }
+
     // ---- Discretização ----
     const double h   = 1.0 / (N - 1);
     const double dt  = 0.90 * (h*h) / (4.0 * alpha); // 90% do limite estável
