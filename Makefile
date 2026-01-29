@@ -39,6 +39,7 @@ LDLIBS  ?= -lm -pthread
 HIB_NAIVE_SRC     ?= hopscotch2d_hib_naive.cpp
 HIB_BUSYWAIT_SRC  ?= hopscotch2d_hib_busywait_nobarrier.cpp
 HIB_SEMAPHORE_SRC ?= hopscotch2d_hib_sem_nobarrier.cpp
+HIB_EWS_SRC       ?= hopscotch2d_hib_ews.cpp
 
 # Apenas OpenMP (AJUSTE se os nomes forem diferentes no seu repo)
 OMP_NAIVE_SRC     ?= hopscotch2d_omp_naive.cpp
@@ -57,6 +58,7 @@ COMMON_OBJS_OMP := $(patsubst %.cpp,$(BUILD_DIR)/%.omp.o,$(COMMON_CPP_OMP))
 HIB_NAIVE_OBJ     := $(BUILD_DIR)/$(HIB_NAIVE_SRC:.cpp=.mpi.o)
 HIB_BUSYWAIT_OBJ  := $(BUILD_DIR)/$(HIB_BUSYWAIT_SRC:.cpp=.mpi.o)
 HIB_SEMAPHORE_OBJ := $(BUILD_DIR)/$(HIB_SEMAPHORE_SRC:.cpp=.mpi.o)
+HIB_EWS_OBJ       := $(BUILD_DIR)/$(HIB_EWS_SRC:.cpp=.mpi.o)
 
 # Objetos OpenMP-only
 OMP_NAIVE_OBJ     := $(BUILD_DIR)/$(OMP_NAIVE_SRC:.cpp=.omp.o)
@@ -65,7 +67,7 @@ OMP_SEMAPHORE_OBJ := $(BUILD_DIR)/$(OMP_SEMAPHORE_SRC:.cpp=.omp.o)
 OMP_EWS_OBJ       := $(BUILD_DIR)/$(OMP_EWS_SRC:.cpp=.omp.o)
 
 # Binários
-HIB_BINS := hopscotch2d_hib_naive hopscotch2d_hib_busywait_nobarrier hopscotch2d_hib_sem_nobarrier
+HIB_BINS := hopscotch2d_hib_naive hopscotch2d_hib_busywait_nobarrier hopscotch2d_hib_sem_nobarrier hopscotch2d_hib_ews
 OMP_BINS := hopscotch2d_omp_naive hopscotch2d_omp_busywait_nobarrier hopscotch2d_omp_sem_nobarrier hopscotch2d_omp_ews
 
 # ----------------------------
@@ -101,6 +103,9 @@ hopscotch2d_hib_busywait_nobarrier: $(COMMON_OBJS_MPI) $(HIB_BUSYWAIT_OBJ)
 	$(MPICXX) $(CXXFLAGS_MPI) $(LDFLAGS) $^ -o $@ $(LDLIBS)
 
 hopscotch2d_hib_sem_nobarrier: $(COMMON_OBJS_MPI) $(HIB_SEMAPHORE_OBJ)
+	$(MPICXX) $(CXXFLAGS_MPI) $(LDFLAGS) $^ -o $@ $(LDLIBS)
+
+hopscotch2d_hib_ews: $(COMMON_OBJS_MPI) $(HIB_EWS_OBJ)
 	$(MPICXX) $(CXXFLAGS_MPI) $(LDFLAGS) $^ -o $@ $(LDLIBS)
 
 # ----------------------------
