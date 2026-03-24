@@ -45,6 +45,7 @@ HIB_EWS_SRC       ?= hopscotch2d_hib_ews.cpp
 OMP_NAIVE_SRC            ?= hopscotch2d_omp_naive.cpp
 OMP_BUSYWAIT_SRC         ?= hopscotch2d_omp_busywait_nobarrier.cpp
 OMP_BUSYWAIT_NOFS_SRC    ?= hopscotch2d_omp_busywait_nobarrier_nofs.cpp
+OMP_MPILIKE_SRC          ?= hopscotch2d_omp_mpilike.cpp
 OMP_SEMAPHORE_SRC        ?= hopscotch2d_omp_sem_nobarrier.cpp
 OMP_EWS_SRC              ?= hopscotch2d_omp_ews.cpp
 
@@ -65,6 +66,7 @@ HIB_EWS_OBJ       := $(BUILD_DIR)/$(HIB_EWS_SRC:.cpp=.mpi.o)
 OMP_NAIVE_OBJ         := $(BUILD_DIR)/$(OMP_NAIVE_SRC:.cpp=.omp.o)
 OMP_BUSYWAIT_OBJ      := $(BUILD_DIR)/$(OMP_BUSYWAIT_SRC:.cpp=.omp.o)
 OMP_BUSYWAIT_NOFS_OBJ := $(BUILD_DIR)/$(OMP_BUSYWAIT_NOFS_SRC:.cpp=.omp.o)
+OMP_MPILIKE_OBJ       := $(BUILD_DIR)/$(OMP_MPILIKE_SRC:.cpp=.omp.o)
 OMP_SEMAPHORE_OBJ     := $(BUILD_DIR)/$(OMP_SEMAPHORE_SRC:.cpp=.omp.o)
 OMP_EWS_OBJ           := $(BUILD_DIR)/$(OMP_EWS_SRC:.cpp=.omp.o)
 
@@ -79,6 +81,7 @@ OMP_BINS := \
 	hopscotch2d_omp_naive \
 	hopscotch2d_omp_busywait_nobarrier \
 	hopscotch2d_omp_busywait_nobarrier_nofs \
+	hopscotch2d_omp_mpilike \
 	hopscotch2d_omp_sem_nobarrier \
 	hopscotch2d_omp_ews
 
@@ -130,6 +133,9 @@ hopscotch2d_omp_busywait_nobarrier: $(COMMON_OBJS_OMP) $(OMP_BUSYWAIT_OBJ)
 	$(CXX) $(CXXFLAGS_OMP) $(LDFLAGS) $^ -o $@ $(LDLIBS)
 
 hopscotch2d_omp_busywait_nobarrier_nofs: $(COMMON_OBJS_OMP) $(OMP_BUSYWAIT_NOFS_OBJ)
+	$(CXX) $(CXXFLAGS_OMP) $(LDFLAGS) $^ -o $@ $(LDLIBS)
+
+hopscotch2d_omp_mpilike: $(COMMON_OBJS_OMP) $(OMP_MPILIKE_OBJ)
 	$(CXX) $(CXXFLAGS_OMP) $(LDFLAGS) $^ -o $@ $(LDLIBS)
 
 hopscotch2d_omp_sem_nobarrier: $(COMMON_OBJS_OMP) $(OMP_SEMAPHORE_OBJ)
