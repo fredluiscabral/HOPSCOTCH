@@ -36,7 +36,8 @@ LDLIBS  ?= -lm -pthread
 # ----------------------------
 
 # MPI puro
-MPI_NAIVE_SRC ?= hopscotch2d_mpi_naive.cpp
+MPI_NAIVE_SRC   ?= hopscotch2d_mpi_naive.cpp
+MPI_OVERLAP_SRC ?= hopscotch2d_mpi_overlap.cpp
 
 # Híbridos MPI/OpenMP
 HIB_NAIVE_SRC     ?= hopscotch2d_hib_naive.cpp
@@ -63,6 +64,7 @@ COMMON_OBJS_OMP := $(patsubst %.cpp,$(BUILD_DIR)/%.omp.o,$(COMMON_CPP_OMP))
 
 # Objetos MPI
 MPI_NAIVE_OBJ     := $(BUILD_DIR)/$(MPI_NAIVE_SRC:.cpp=.mpi.o)
+MPI_OVERLAP_OBJ   := $(BUILD_DIR)/$(MPI_OVERLAP_SRC:.cpp=.mpi.o)
 HIB_NAIVE_OBJ     := $(BUILD_DIR)/$(HIB_NAIVE_SRC:.cpp=.mpi.o)
 HIB_BUSYWAIT_OBJ  := $(BUILD_DIR)/$(HIB_BUSYWAIT_SRC:.cpp=.mpi.o)
 HIB_SEMAPHORE_OBJ := $(BUILD_DIR)/$(HIB_SEMAPHORE_SRC:.cpp=.mpi.o)
@@ -80,7 +82,8 @@ OMP_EWS_OBJ            := $(BUILD_DIR)/$(OMP_EWS_SRC:.cpp=.omp.o)
 
 # Binários
 MPI_BINS := \
-	hopscotch2d_mpi_naive
+	hopscotch2d_mpi_naive \
+	hopscotch2d_mpi_overlap
 
 HIB_BINS := \
 	hopscotch2d_hib_naive \
@@ -127,6 +130,9 @@ $(BUILD_DIR)/%.omp.o: %.cpp | $(BUILD_DIR)
 # Linkagem MPI puro
 # ----------------------------
 hopscotch2d_mpi_naive: $(COMMON_OBJS_MPI) $(MPI_NAIVE_OBJ)
+	$(MPICXX) $(CXXFLAGS_MPI) $(LDFLAGS) $^ -o $@ $(LDLIBS)
+
+hopscotch2d_mpi_overlap: $(COMMON_OBJS_MPI) $(MPI_OVERLAP_OBJ)
 	$(MPICXX) $(CXXFLAGS_MPI) $(LDFLAGS) $^ -o $@ $(LDLIBS)
 
 # ----------------------------
